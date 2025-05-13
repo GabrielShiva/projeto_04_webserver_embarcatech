@@ -35,7 +35,7 @@ pico_sdk_init()
 
 # Add executable. Default name is the project name, version 0.1
 
-add_executable(projeto_webserver_04 main.c )
+add_executable(projeto_webserver_04 main.c lib/ssd1306.c)
 
 pico_set_program_name(projeto_webserver_04 "projeto_webserver_04")
 pico_set_program_version(projeto_webserver_04 "0.1")
@@ -48,7 +48,9 @@ pico_enable_stdio_usb(projeto_webserver_04 1)
 target_link_libraries(projeto_webserver_04
         pico_stdlib
         pico_cyw43_arch_lwip_threadsafe_background
-        hardware_adc)
+        hardware_adc
+        hardware_i2c
+      )
 
 # Add the standard include files to the build
 target_include_directories(projeto_webserver_04 PRIVATE

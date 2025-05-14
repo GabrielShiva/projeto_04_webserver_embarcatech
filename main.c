@@ -43,13 +43,14 @@ float average_adc_measures = 0.0f;
 float unknown_resistor = 0.0f;
 float closest_e24_resistor = 0.0f;
 
-// define variáveis para debounce do botão
+// Define variáveis para debounce do botão
 volatile uint32_t last_time_btn_press = 0;
 bool is_matrix_enabled = true;
 
-// debounce delay
+// Debounce delay
 const uint32_t debounce_delay_ms = 260;
 
+// Inicializa instância do display
 ssd1306_t ssd;
 
 // Definição de tabela para valores dos resistores da série e24
@@ -64,6 +65,37 @@ int resistor_band_color_indexes[3] = {
   0  // multiplicador
 };
 
+// definição do header do HTML
+static const char page_header[] =
+  "HTTP/1.1 200 OK\r\n"
+  "Content-Type: text/html\r\n"
+  "\r\n"
+  "<!DOCTYPE html>\n"
+  "<html>\n"
+  "<head>\n"
+  "  <meta charset=\"utf-8\">\n"
+  "  <title>Medidor de Resistencia</title>\n"
+  "  <style>\n"
+  "    body { background-color:rgb(216,216,216); font-family:Arial,sans-serif; text-align:center; margin-top:50px; }\n"
+  "    h1 { font-size:35px; }\n"
+  "    .temperature { font-size:20px; margin:10px 0; color:#333; }\n"
+  "  </style>\n"
+  "</head>\n"
+  "<body>\n"
+  "  <h1>Medidor de Resistencia</h1>\n";
+
+// definição do footer e script para atualizar a página do HTML
+static const char page_footer[] =
+  "  <script>\n"
+  "    setInterval(() => { window.location.reload(); }, 1000);\n"
+  "  </script>\n"
+  "</body>\n"
+  "</html>\n";
+
+
+// Armazena o texto que será exibido no display OLED
+char display_text[20] = {0};
+
 // Função de callback ao aceitar conexões TCP
 static err_t tcp_server_accept(void *arg, struct tcp_pcb *newpcb, err_t err);
 
@@ -73,172 +105,26 @@ static err_t tcp_server_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, er
 // Leitura da temperatura interna
 float resistor_measure(void);
 
+// Obtenção do resistor da série e24 mais próximo do valor medido
+float get_closest_e24_resistor(float resistor_value);
+
+// Obtenção das cores de cada uma das bandas do resistor (4 bandas) -> 5 bandas ainda será implementado
+void get_band_color(float *resistor_value);
+
 // Tratamento do request do usuário
 void user_request(char **request);
 
-char display_text[20] = {0};
+// Inicialização do protocolo I2C para comunicação com o display OLED
+void i2c_setup(uint baud_in_kilo);
 
-void i2c_setup(uint baud_in_kilo) {
-  i2c_init(I2C_PORT, baud_in_kilo * 1000);
+// Inicializa o display OLED
+void ssd1306_setup(ssd1306_t *ssd_ptr);
 
-  gpio_set_function(I2C_SDA, GPIO_FUNC_I2C);
-  gpio_set_function(I2C_SCL, GPIO_FUNC_I2C);
-  gpio_pull_up(I2C_SDA);
-  gpio_pull_up(I2C_SCL);
-}
+// Desenha o conteúdo do display OLED
+void draw_display_layout(ssd1306_t *ssd_ptr);
 
-void ssd1306_setup(ssd1306_t *ssd_ptr) {
-  ssd1306_init(ssd_ptr, WIDTH, HEIGHT, false, SSD1306_ADDRESS, I2C_PORT); // Inicializa o display
-  ssd1306_config(ssd_ptr);                                                // Configura o display
-  ssd1306_send_data(ssd_ptr);                                             // Envia os dados para o display
-
-  // Limpa o display. O display inicia com todos os pixels apagados.
-  ssd1306_fill(ssd_ptr, false);
-  ssd1306_send_data(ssd_ptr);
-}
-
-void gpio_irq_handler(uint gpio, uint32_t events) {
-  uint32_t current_time = to_ms_since_boot(get_absolute_time()); // retorna o tempo total em ms desde o boot do rp2040
-
-  // verifica se a diff entre o tempo atual e a ultima vez que o botão foi pressionado é maior que o tempo de debounce
-  if (current_time - last_time_btn_press > debounce_delay_ms) {
-    last_time_btn_press = current_time;
-
-    if (gpio == BTN_B_PIN) {
-      reset_usb_boot(0, 0);
-    }
-  }
-}
-
-float get_closest_e24_resistor(float resistor_value) {
-  if (resistor_value <= 0) {
-     return 0.0;
-  }
-
-  float normalized_resistor = resistor_value;
-  float exponent = 0.0f;
-
-  // Normaliza o valor fornecido para a faixa [0-10]
-  while (normalized_resistor >= 10) {
-    normalized_resistor = normalized_resistor / 10;
-    exponent = exponent + 1.0;
-  }
-
-  float closest_resistor = e24_resistor_values[0];
-  float min_diff = fabs(normalized_resistor - e24_resistor_values[0]);
-
-  for (int i = 0; i < num_e24_resistor_values; i++) {
-    float curr_diff = fabs(normalized_resistor - e24_resistor_values[i]);
-
-    if (curr_diff < min_diff) {
-      min_diff = curr_diff;
-      closest_resistor = e24_resistor_values[i];
-    }
-  }
-
-  return closest_resistor * powf(10.0, exponent);
-}
-
-void get_band_color(float *resistor_value) {
-  // Cálculo das cores de cada banda do resistor (4 bandas)
-  float normalized_resistor = *resistor_value;
-  int exponent = -1;
-
-  // Normaliza o valor fornecido para a faixa [0-10]
-  while (normalized_resistor >= 10.0) {
-    normalized_resistor = normalized_resistor / 10;
-    exponent = exponent + 1;
-  }
-
-  // Obtenção do valor da primeira banda
-  // EX.: 3.7 => (int)(3.7) => 3
-  int first_band_value = (int)normalized_resistor;
-
-  // Obtenção do valor da segunda banda
-  // EX.: 3.7 => 3.7 * 10 => 37 => 37 % 10 => 7.0 => (int)(7.0) => 7
-  int second_band_value = (int)(normalized_resistor * 10) % 10;
-
-  // Definição da das Bandas 1, 2 e multiplicador
-  resistor_band_colors[0] = available_digit_colors[first_band_value % 10];
-  resistor_band_colors[1] = available_digit_colors[second_band_value % 10];
-  resistor_band_colors[2] = (exponent >= 0 && exponent <= 9) ? available_digit_colors[exponent] : "erro";
-
-  resistor_band_color_indexes[0] = first_band_value % 10;
-  resistor_band_color_indexes[1] = second_band_value % 10;
-  resistor_band_color_indexes[2] = (exponent >= 0 && exponent <= 9) ? exponent : 0;
-}
-
-void draw_display_layout(ssd1306_t *ssd_ptr) {
-  // desenho dos contornos do layout do display
-  ssd1306_rect(ssd_ptr, 1, 1, 126, 62, 1, 0);
-  //cima
-  ssd1306_line(ssd_ptr, 5, 5, 5, 11, 1);
-  ssd1306_line(ssd_ptr, 6, 4, 10, 4, 1);
-  ssd1306_line(ssd_ptr, 10, 5, 20, 5, 1);
-  //baixo
-  ssd1306_line(ssd_ptr, 6, 12, 10, 12, 1);
-  ssd1306_line(ssd_ptr, 10, 11, 20, 11, 1);
-  //primeira faixa
-  ssd1306_line(ssd_ptr, 8, 4, 8, 12, 1);
-  ssd1306_line(ssd_ptr, 9, 4, 9, 12, 1);
-  //segunda faixa
-  ssd1306_line(ssd_ptr, 13, 5, 13, 11, 1);
-  ssd1306_line(ssd_ptr, 14, 5, 14, 11, 1);
-  //multiplicador
-  ssd1306_line(ssd_ptr, 17, 5, 17, 11, 1);
-  ssd1306_line(ssd_ptr, 18, 5, 18, 11, 1);
-  //tolerancia
-  ssd1306_line(ssd_ptr, 21, 5, 21, 11, 1);
-  ssd1306_line(ssd_ptr, 22, 5, 22, 11, 1);
-  //cima
-  ssd1306_line(ssd_ptr, 20, 4, 24, 4, 1);
-  ssd1306_line(ssd_ptr, 20, 12, 24, 12, 1);
-  ssd1306_line(ssd_ptr, 25, 5, 25, 11, 1);
-
-  // seta para a tolerancia
-  ssd1306_line(ssd_ptr, 21, 15, 21, 23, 1);
-  ssd1306_line(ssd_ptr, 22, 15, 22, 23, 1);
-
-  ssd1306_line(ssd_ptr, 22, 22, 50, 22, 1);
-  ssd1306_line(ssd_ptr, 22, 23, 50, 23, 1);
-
-  ssd1306_line(ssd_ptr, 50, 20, 50, 25, 1);
-  ssd1306_line(ssd_ptr, 51, 21, 51, 24, 1);
-  ssd1306_line(ssd_ptr, 52, 22, 52, 23, 1);
-
-  // seta para o multiplicador
-  ssd1306_line(ssd_ptr, 17, 15, 17, 35, 1);
-  ssd1306_line(ssd_ptr, 18, 15, 18, 35, 1);
-
-  ssd1306_line(ssd_ptr, 18, 34, 50, 34, 1);
-  ssd1306_line(ssd_ptr, 18, 35, 50, 35, 1);
-
-  ssd1306_line(ssd_ptr, 50, 32, 50, 37, 1);
-  ssd1306_line(ssd_ptr, 51, 33, 51, 36, 1);
-  ssd1306_line(ssd_ptr, 52, 34, 52, 35, 1);
-
-  // seta para a segunda faixa
-  ssd1306_line(ssd_ptr, 13, 15, 13, 47, 1);
-  ssd1306_line(ssd_ptr, 14, 15, 14, 47, 1);
-
-  ssd1306_line(ssd_ptr, 14, 46, 50, 46, 1);
-  ssd1306_line(ssd_ptr, 14, 47, 50, 47, 1);
-
-  ssd1306_line(ssd_ptr, 50, 44, 50, 49, 1);
-  ssd1306_line(ssd_ptr, 51, 45, 51, 48, 1);
-  ssd1306_line(ssd_ptr, 52, 46, 52, 47, 1);
-
-  // seta para a primeira faixa
-  ssd1306_line(ssd_ptr, 8, 15, 8, 57, 1);
-  ssd1306_line(ssd_ptr, 9, 15, 9, 57, 1);
-
-  ssd1306_line(ssd_ptr, 9, 56, 50, 56, 1);
-  ssd1306_line(ssd_ptr, 9, 57, 50, 57, 1);
-
-  ssd1306_line(ssd_ptr, 50, 54, 50, 59, 1);
-  ssd1306_line(ssd_ptr, 51, 55, 51, 58, 1);
-  ssd1306_line(ssd_ptr, 52, 56, 52, 57, 1);
-}
+// Inicializa a função que realiza o tratamento das interrupções dos botões
+void gpio_irq_handler(uint gpio, uint32_t events);
 
 int main() {
   // [INÍCIO] modo BOOTSEL associado ao botão B (apenas para desenvolvedores)
@@ -370,10 +256,17 @@ int main() {
     ssd1306_draw_string(&ssd, display_text, 29, 5);
 
     // Exibição das cores de cada banda (Tolerância Multiplicador Faixa_2 Faixa_1)
-    ssd1306_draw_string(&ssd, "Au (5%)", 60, 20);
-    ssd1306_draw_string(&ssd, resistor_band_colors[2], 60, 31);
-    ssd1306_draw_string(&ssd, resistor_band_colors[1], 60, 42);
-    ssd1306_draw_string(&ssd, resistor_band_colors[0], 60, 52);
+    ssd1306_draw_string(&ssd, "1=", 5, 20);
+    ssd1306_draw_string(&ssd, resistor_band_colors[0], 60, 20);
+
+    ssd1306_draw_string(&ssd, "2=", 5, 31);
+    ssd1306_draw_string(&ssd, resistor_band_colors[1], 60, 31);
+
+    ssd1306_draw_string(&ssd, "mult=", 5, 42);
+    ssd1306_draw_string(&ssd, resistor_band_colors[2], 60, 42);
+
+    ssd1306_draw_string(&ssd, "tol=", 5, 52);
+    ssd1306_draw_string(&ssd, "Au (5%)", 60, 52);
 
     ssd1306_send_data(&ssd);
 
@@ -393,34 +286,204 @@ int main() {
 
 // -------------------------------------- Funções ---------------------------------
 
-// Função de callback ao aceitar conexões TCP
-static err_t tcp_server_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
-{
-    tcp_recv(newpcb, tcp_server_recv);
-    return ERR_OK;
+void i2c_setup(uint baud_in_kilo) {
+  i2c_init(I2C_PORT, baud_in_kilo * 1000);
+
+  gpio_set_function(I2C_SDA, GPIO_FUNC_I2C);
+  gpio_set_function(I2C_SCL, GPIO_FUNC_I2C);
+  gpio_pull_up(I2C_SDA);
+  gpio_pull_up(I2C_SCL);
 }
 
-// Tratamento do request do usuário - digite aqui
-void user_request(char **request){
+void ssd1306_setup(ssd1306_t *ssd_ptr) {
+  ssd1306_init(ssd_ptr, WIDTH, HEIGHT, false, SSD1306_ADDRESS, I2C_PORT); // Inicializa o display
+  ssd1306_config(ssd_ptr);                                                // Configura o display
+  ssd1306_send_data(ssd_ptr);                                             // Envia os dados para o display
+
+  // Limpa o display. O display inicia com todos os pixels apagados.
+  ssd1306_fill(ssd_ptr, false);
+  ssd1306_send_data(ssd_ptr);
 }
 
-// Leitura da temperatura interna
-float resistor_measure(void){
+void draw_display_layout(ssd1306_t *ssd_ptr) {
+  // desenho dos contornos do layout do display
+  ssd1306_rect(ssd_ptr, 1, 1, 126, 62, 1, 0);
+  //cima
+  ssd1306_line(ssd_ptr, 5, 5, 5, 11, 1);
+  ssd1306_line(ssd_ptr, 6, 4, 10, 4, 1);
+  ssd1306_line(ssd_ptr, 10, 5, 20, 5, 1);
+  //baixo
+  ssd1306_line(ssd_ptr, 6, 12, 10, 12, 1);
+  ssd1306_line(ssd_ptr, 10, 11, 20, 11, 1);
+  //primeira faixa
+  ssd1306_line(ssd_ptr, 8, 4, 8, 12, 1);
+  ssd1306_line(ssd_ptr, 9, 4, 9, 12, 1);
+  //segunda faixa
+  ssd1306_line(ssd_ptr, 13, 5, 13, 11, 1);
+  ssd1306_line(ssd_ptr, 14, 5, 14, 11, 1);
+  //multiplicador
+  ssd1306_line(ssd_ptr, 17, 5, 17, 11, 1);
+  ssd1306_line(ssd_ptr, 18, 5, 18, 11, 1);
+  //tolerancia
+  ssd1306_line(ssd_ptr, 21, 5, 21, 11, 1);
+  ssd1306_line(ssd_ptr, 22, 5, 22, 11, 1);
+  //cima
+  ssd1306_line(ssd_ptr, 20, 4, 24, 4, 1);
+  ssd1306_line(ssd_ptr, 20, 12, 24, 12, 1);
+  ssd1306_line(ssd_ptr, 25, 5, 25, 11, 1);
+
+  // // seta para a tolerancia
+  // ssd1306_line(ssd_ptr, 21, 15, 21, 23, 1);
+  // ssd1306_line(ssd_ptr, 22, 15, 22, 23, 1);
+
+  // ssd1306_line(ssd_ptr, 22, 22, 50, 22, 1);
+  // ssd1306_line(ssd_ptr, 22, 23, 50, 23, 1);
+
+  // ssd1306_line(ssd_ptr, 50, 20, 50, 25, 1);
+  // ssd1306_line(ssd_ptr, 51, 21, 51, 24, 1);
+  // ssd1306_line(ssd_ptr, 52, 22, 52, 23, 1);
+
+  // // seta para o multiplicador
+  // ssd1306_line(ssd_ptr, 17, 15, 17, 35, 1);
+  // ssd1306_line(ssd_ptr, 18, 15, 18, 35, 1);
+
+  // ssd1306_line(ssd_ptr, 18, 34, 50, 34, 1);
+  // ssd1306_line(ssd_ptr, 18, 35, 50, 35, 1);
+
+  // ssd1306_line(ssd_ptr, 50, 32, 50, 37, 1);
+  // ssd1306_line(ssd_ptr, 51, 33, 51, 36, 1);
+  // ssd1306_line(ssd_ptr, 52, 34, 52, 35, 1);
+
+  // // seta para a segunda faixa
+  // ssd1306_line(ssd_ptr, 13, 15, 13, 47, 1);
+  // ssd1306_line(ssd_ptr, 14, 15, 14, 47, 1);
+
+  // ssd1306_line(ssd_ptr, 14, 46, 50, 46, 1);
+  // ssd1306_line(ssd_ptr, 14, 47, 50, 47, 1);
+
+  // ssd1306_line(ssd_ptr, 50, 44, 50, 49, 1);
+  // ssd1306_line(ssd_ptr, 51, 45, 51, 48, 1);
+  // ssd1306_line(ssd_ptr, 52, 46, 52, 47, 1);
+
+  // // seta para a primeira faixa
+  // ssd1306_line(ssd_ptr, 8, 15, 8, 57, 1);
+  // ssd1306_line(ssd_ptr, 9, 15, 9, 57, 1);
+
+  // ssd1306_line(ssd_ptr, 9, 56, 50, 56, 1);
+  // ssd1306_line(ssd_ptr, 9, 57, 50, 57, 1);
+
+  // ssd1306_line(ssd_ptr, 50, 54, 50, 59, 1);
+  // ssd1306_line(ssd_ptr, 51, 55, 51, 58, 1);
+  // ssd1306_line(ssd_ptr, 52, 56, 52, 57, 1);
+}
+
+void gpio_irq_handler(uint gpio, uint32_t events) {
+  uint32_t current_time = to_ms_since_boot(get_absolute_time()); // retorna o tempo total em ms desde o boot do rp2040
+
+  // verifica se a diff entre o tempo atual e a ultima vez que o botão foi pressionado é maior que o tempo de debounce
+  if (current_time - last_time_btn_press > debounce_delay_ms) {
+    last_time_btn_press = current_time;
+
+    if (gpio == BTN_B_PIN) {
+      reset_usb_boot(0, 0);
+    }
+  }
+}
+
+float resistor_measure(void) {
   // Seleciona o ADC para pino 28 como entrada analógica
     adc_select_input(2);
 
     // Obtenção de várias leituras seguidas e média
     cumulative_adc_measure = 0.0f;
 
-    for (int i = 0; i < 500; i++) {
+    for (int i = 0; i < 100; i++) {
       cumulative_adc_measure += adc_read();
-      sleep_ms(1);
+      sleep_us(10);
     }
 
-    average_adc_measures = cumulative_adc_measure / 500.0f;
+    average_adc_measures = cumulative_adc_measure / 100.0f;
 
     // Cálculo da resistencia em ohms e obtenção do valor comercial mais próximo
     return (reference_resistor * average_adc_measures) / (adc_resolution - average_adc_measures);
+}
+
+float get_closest_e24_resistor(float resistor_value) {
+  if (resistor_value <= 0) {
+     return 0.0;
+  }
+
+  float normalized_resistor = resistor_value;
+  float exponent = 0.0f;
+
+  // Normaliza o valor fornecido para a faixa [0-10]
+  while (normalized_resistor >= 10) {
+    normalized_resistor = normalized_resistor / 10;
+    exponent = exponent + 1.0;
+  }
+
+  float closest_resistor = e24_resistor_values[0];
+  float min_diff = fabs(normalized_resistor - e24_resistor_values[0]);
+
+  for (int i = 0; i < num_e24_resistor_values; i++) {
+    float curr_diff = fabs(normalized_resistor - e24_resistor_values[i]);
+
+    if (curr_diff < min_diff) {
+      min_diff = curr_diff;
+      closest_resistor = e24_resistor_values[i];
+    }
+  }
+
+  return closest_resistor * powf(10.0, exponent);
+}
+
+void get_band_color(float *resistor_value) {
+  // Cálculo das cores de cada banda do resistor (4 bandas)
+  float normalized_resistor = *resistor_value;
+  int exponent = -1;
+
+  // Normaliza o valor fornecido para a faixa [0-10]
+  while (normalized_resistor >= 10.0) {
+    normalized_resistor = normalized_resistor / 10;
+    exponent = exponent + 1;
+  }
+
+  // Obtenção do valor da primeira banda
+  // EX.: 3.7 => (int)(3.7) => 3
+  int first_band_value = (int)normalized_resistor;
+
+  // Obtenção do valor da segunda banda
+  // EX.: 3.7 => 3.7 * 10 => 37 => 37 % 10 => 7.0 => (int)(7.0) => 7
+  int second_band_value = (int)(normalized_resistor * 10) % 10;
+
+  // Definição da das Bandas 1, 2 e multiplicador
+  resistor_band_colors[0] = available_digit_colors[first_band_value % 10];
+  resistor_band_colors[1] = available_digit_colors[second_band_value % 10];
+  resistor_band_colors[2] = (exponent >= 0 && exponent <= 9) ? available_digit_colors[exponent] : "erro";
+
+  resistor_band_color_indexes[0] = first_band_value % 10;
+  resistor_band_color_indexes[1] = second_band_value % 10;
+  resistor_band_color_indexes[2] = (exponent >= 0 && exponent <= 9) ? exponent : 0;
+}
+
+static err_t tcp_server_accept(void *arg, struct tcp_pcb *newpcb, err_t err) {
+    tcp_recv(newpcb, tcp_server_recv);
+    return ERR_OK;
+}
+
+// Tratamento do request do usuário - digite aqui
+void user_request(char **request) {
+    // if (strstr(*request, "GET /data") != NULL) {
+    //     char buf[128];
+    //     int len = snprintf(buf, sizeof(buf),
+    //         "HTTP/1.1 200 OK\r\n"
+    //         "Content-Type: text/plain\r\n"
+    //         "Cache-Control: no-cache\r\n"
+    //         "\r\n"
+    //         "%.0f", unknown_resistor);
+    //     tcp_write(tpcb, buf, len, TCP_WRITE_FLAG_COPY);
+    //     tcp_output(tpcb);
+    // }
 }
 
 // Função de callback para processar requisições HTTP
@@ -431,57 +494,41 @@ static err_t tcp_server_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, er
         return ERR_OK;
     }
 
-    // Alocação do request na memória dinámica
-    char *request = (char *)malloc(p->len + 1);
+    // copia a requisição
+    char *request = malloc(p->len+1);
     memcpy(request, p->payload, p->len);
     request[p->len] = '\0';
 
-    printf("Request: %s\n", request);
-
-    // Tratamento de request - Controle dos LEDs
-    user_request(&request);
-
-    // Leitura da temperatura interna
-    // float temperature = temp_read();
-
-    // Cria a resposta HTML
-    char html[1024];
-
-    // Instruções html do webserver
-    snprintf(html, sizeof(html), // Formatar uma string e armazená-la em um buffer de caracteres
-             "HTTP/1.1 200 OK\r\n"
-             "Content-Type: text/html\r\n"
-             "\r\n"
-             "<!DOCTYPE html>\n"
-             "<html>\n"
-             "<head>\n"
-             "<title>Medidor de Resistencia </title>\n"
-             "<style>\n"
-             "body { background-color:rgb(216, 216, 216); font-family: Arial, sans-serif; text-align: center; margin-top: 50px; }\n"
-             "h1 { font-size: 64px; margin-bottom: 30px; }\n"
-             "button { background-color: LightGray; font-size: 36px; margin: 10px; padding: 20px 40px; border-radius: 10px; }\n"
-             ".temperature { font-size: 48px; margin-top: 30px; color: #333; }\n"
-             "</style>\n"
-             "</head>\n"
-             "<body>\n"
-             "<h1>Medidor de Resistencia</h1>\n"
-             "<p class=\"temperature\">Valor Medido: %.0f &#8486;</p>\n"
-             "<p class=\"temperature\">Valor Comercial: %.0f &#8486;</p>\n"
-             "</body>\n"
-             "</html>\n",
-             unknown_resistor, closest_e24_resistor);
-
-    // Escreve dados para envio (mas não os envia imediatamente).
-    tcp_write(tpcb, html, strlen(html), TCP_WRITE_FLAG_COPY);
-
-    // Envia a mensagem
+    // Envia o header da página
+    tcp_write(tpcb, page_header, strlen(page_header), TCP_WRITE_FLAG_COPY);
     tcp_output(tpcb);
 
-    //libera memória alocada dinamicamente
+    // Cria o corpo da página e envia com os valores de resistência atualizados
+    char body[1024];
+    int body_len = snprintf(body, sizeof(body),
+        "  <p class=\"temperature\">Numero de faixas: <span>4</span></p>\n"
+        "  <p class=\"temperature\">Valor Medido: <span id=\"measuredValue\">%.0f</span> &#8486;</p>\n"
+        "  <p class=\"temperature\">Valor Comercial: <span id=\"commercialValue\">%.0f</span> &#8486;</p>\n"
+        "  <h1 style='font-size:25px;'>Cores das Faixas</h1>\n"
+        "  <p class=\"temperature\">1 Faixa: <span>%s</span></p>\n"
+        "  <p class=\"temperature\">2 Faixa: <span>%s</span></p>\n"
+        "  <p class=\"temperature\">Multiplicador: <span>%s</span></p>\n"
+        "  <p class=\"temperature\">Tolerancia: <span>Au (5%)</span></p>\n",
+        unknown_resistor,
+        closest_e24_resistor,
+        resistor_band_colors[0],
+        resistor_band_colors[1],
+        resistor_band_colors[2]
+    );
+    tcp_write(tpcb, body, body_len, TCP_WRITE_FLAG_COPY);
+    tcp_output(tpcb);
+
+    // Envia o footer da págian HTML
+    tcp_write(tpcb, page_footer, strlen(page_footer), TCP_WRITE_FLAG_COPY);
+    tcp_output(tpcb);
+
+    // Faz a limpeza do request
     free(request);
-
-    //libera um buffer de pacote (pbuf) que foi alocado anteriormente
     pbuf_free(p);
-
     return ERR_OK;
 }

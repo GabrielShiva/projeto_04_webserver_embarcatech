@@ -41,7 +41,7 @@ int reference_resistor = 470; // Resistência conhecida
 float cumulative_adc_measure = 0.0f;
 float average_adc_measures = 0.0f;
 float unknown_resistor = 0.0f;
-float closest_e24_resistor = 0.0f;
+float closest_comercial_resistor = 0.0f;
 
 // Define variáveis para debounce do botão
 volatile uint32_t last_time_btn_press = 0;
@@ -54,15 +54,35 @@ const uint32_t debounce_delay_ms = 260;
 ssd1306_t ssd;
 
 // Definição de tabela para valores dos resistores da série e24
-const float e24_resistor_values[24] = {1.0, 1.1, 1.2, 1.3, 1.5, 1.6, 1.8, 2.0, 2.2, 2.4, 2.7, 3.0, 3.3, 3.6, 3.9, 4.3, 4.7, 5.1, 5.6, 6.2, 6.8, 7.5, 8.2, 9.1};
-const int num_e24_resistor_values = sizeof(e24_resistor_values) / sizeof(e24_resistor_values[0]);
+const float e24_resistor_values[24] = {
+  1.0, 1.1, 1.2, 1.3, 1.5, 1.6, 1.8, 2.0,
+  2.2, 2.4, 2.7, 3.0, 3.3, 3.6, 3.9, 4.3,
+  4.7, 5.1, 5.6, 6.2, 6.8, 7.5, 8.2, 9.1
+};
+
+// Definição de tabela para valores dos resistores da série e96
+const float e96_resistor_values[96] = {
+  1.00, 1.02, 1.05, 1.07, 1.10, 1.13, 1.15, 1.18,
+  1.21, 1.24, 1.27, 1.30, 1.33, 1.37, 1.40, 1.43,
+  1.47, 1.50, 1.54, 1.58, 1.62, 1.65, 1.69, 1.74,
+  1.78, 1.82, 1.87, 1.91, 1.96, 2.00, 2.05, 2.10,
+  2.15, 2.21, 2.26, 2.32, 2.37, 2.43, 2.49, 2.55,
+  2.61, 2.67, 2.74, 2.80, 2.87, 2.94, 3.01, 3.09,
+  3.16, 3.24, 3.32, 3.40, 3.48, 3.57, 3.65, 3.74,
+  3.83, 3.92, 4.02, 4.12, 4.22, 4.32, 4.42, 4.53,
+  4.64, 4.75, 4.87, 4.99, 5.11, 5.23, 5.36, 5.49,
+  5.62, 5.76, 5.90, 6.04, 6.19, 6.34, 6.49, 6.65,
+  6.81, 6.98, 7.15, 7.32, 7.50, 7.68, 7.87, 8.06,
+  8.25, 8.45, 8.66, 8.87, 9.09, 9.31, 9.53, 9.76
+};
 
 const char *available_digit_colors[10] = {"preto", "marrom", "vermelho", "laranja", "amarelo", "verde", "azul", "violeta", "cinza", "branco"};
-const char *resistor_band_colors[3] = {0};
-int resistor_band_color_indexes[3] = {
+const char *resistor_band_colors[4] = {0};
+int resistor_band_color_indexes[4] = {
   0, // primeira banda
   0, // segunda banda
-  0  // multiplicador
+  0, // terceira banda
+  0 // multiplicador
 };
 
 // definição do header do HTML
@@ -108,6 +128,11 @@ float resistor_measure(void);
 // Obtenção do resistor da série e24 mais próximo do valor medido
 float get_closest_e24_resistor(float resistor_value);
 
+// Obtenção do resistor da série e96 mais próximo do valor medido
+float get_closest_e96_resistor(float resistor_value);
+
+volatile bool is_four_bands_mode = true;
+
 // Obtenção das cores de cada uma das bandas do resistor (4 bandas) -> 5 bandas ainda será implementado
 void get_band_color(float *resistor_value);
 
@@ -136,6 +161,11 @@ int main() {
 
   //Inicializa todos os tipos de bibliotecas stdio padrão presentes que estão ligados ao binário.
   stdio_init_all();
+
+  gpio_init(BTN_A_PIN);
+  gpio_set_dir(BTN_A_PIN, GPIO_IN);
+  gpio_pull_up(BTN_A_PIN);
+  gpio_set_irq_enabled(BTN_A_PIN, GPIO_IRQ_EDGE_FALL, true);
 
   // Inicialização do protocolo I2C com 400Khz e inicialização do display
   i2c_setup(400);
@@ -243,16 +273,21 @@ int main() {
   while (true) {
     // Cálculo da resistencia em ohms e obtenção do valor comercial mais próximo
     unknown_resistor = resistor_measure();
-    closest_e24_resistor = get_closest_e24_resistor(unknown_resistor);
 
-    get_band_color(&closest_e24_resistor);
+    if (is_four_bands_mode) {
+      closest_comercial_resistor = get_closest_e24_resistor(unknown_resistor);
+    } else {
+      closest_comercial_resistor = get_closest_e96_resistor(unknown_resistor);
+    }
+
+    get_band_color(&closest_comercial_resistor);
 
     // Limpeza do display
     ssd1306_fill(&ssd, false);
     draw_display_layout(&ssd);
 
-     // Exibição do valor comercial da resistência mais próxima
-    sprintf(display_text, "%.0f ohms", closest_e24_resistor);
+    // Exibição do valor comercial da resistência mais próxima
+    sprintf(display_text, "%.0f ohms", closest_comercial_resistor);
     ssd1306_draw_string(&ssd, display_text, 29, 5);
 
     // Exibição das cores de cada banda (Tolerância Multiplicador Faixa_2 Faixa_1)
@@ -262,11 +297,16 @@ int main() {
     ssd1306_draw_string(&ssd, "2=", 5, 31);
     ssd1306_draw_string(&ssd, resistor_band_colors[1], 60, 31);
 
-    ssd1306_draw_string(&ssd, "mult=", 5, 42);
-    ssd1306_draw_string(&ssd, resistor_band_colors[2], 60, 42);
+    if (is_four_bands_mode) {
+      ssd1306_draw_string(&ssd, "mult=", 5, 42);
+      ssd1306_draw_string(&ssd, resistor_band_colors[3], 60, 42);
+    } else {
+      ssd1306_draw_string(&ssd, "3=", 5, 42);
+      ssd1306_draw_string(&ssd, resistor_band_colors[2], 60, 42);
 
-    ssd1306_draw_string(&ssd, "tol=", 5, 52);
-    ssd1306_draw_string(&ssd, "Au (5%)", 60, 52);
+      ssd1306_draw_string(&ssd, "mult=", 5, 52);
+      ssd1306_draw_string(&ssd, resistor_band_colors[3], 60, 52);
+    }
 
     ssd1306_send_data(&ssd);
 
@@ -384,7 +424,15 @@ void gpio_irq_handler(uint gpio, uint32_t events) {
   if (current_time - last_time_btn_press > debounce_delay_ms) {
     last_time_btn_press = current_time;
 
-    if (gpio == BTN_B_PIN) {
+    if (gpio == BTN_A_PIN) {
+      is_four_bands_mode = !is_four_bands_mode;
+
+      if (is_four_bands_mode) {
+        printf("modo: 4 faixas.\n");
+      } else {
+        printf("modo: 5 faixas.\n");
+      }
+    } else if (gpio == BTN_B_PIN) {
       reset_usb_boot(0, 0);
     }
   }
@@ -425,12 +473,41 @@ float get_closest_e24_resistor(float resistor_value) {
   float closest_resistor = e24_resistor_values[0];
   float min_diff = fabs(normalized_resistor - e24_resistor_values[0]);
 
-  for (int i = 0; i < num_e24_resistor_values; i++) {
+  for (int i = 0; i < 24; i++) {
     float curr_diff = fabs(normalized_resistor - e24_resistor_values[i]);
 
     if (curr_diff < min_diff) {
       min_diff = curr_diff;
       closest_resistor = e24_resistor_values[i];
+    }
+  }
+
+  return closest_resistor * powf(10.0, exponent);
+}
+
+float get_closest_e96_resistor(float resistor_value) {
+  if (resistor_value <= 0) {
+     return 0.0;
+  }
+
+  float normalized_resistor = resistor_value;
+  float exponent = 0.0f;
+
+  // Normaliza o valor fornecido para a faixa [0-10]
+  while (normalized_resistor >= 10) {
+    normalized_resistor = normalized_resistor / 10;
+    exponent = exponent + 1.0;
+  }
+
+  float closest_resistor = e96_resistor_values[0];
+  float min_diff = fabs(normalized_resistor - e96_resistor_values[0]);
+
+  for (int i = 0; i < 96; i++) {
+    float curr_diff = fabs(normalized_resistor - e96_resistor_values[i]);
+
+    if (curr_diff < min_diff) {
+      min_diff = curr_diff;
+      closest_resistor = e96_resistor_values[i];
     }
   }
 
@@ -448,22 +525,20 @@ void get_band_color(float *resistor_value) {
     exponent = exponent + 1;
   }
 
-  // Obtenção do valor da primeira banda
-  // EX.: 3.7 => (int)(3.7) => 3
-  int first_band_value = (int)normalized_resistor;
+  // Definição da das Bandas 1, 2, 3 e multiplicador
+  resistor_band_colors[0] = available_digit_colors[(int)normalized_resistor];
+  resistor_band_color_indexes[0] = (int)normalized_resistor;
 
-  // Obtenção do valor da segunda banda
-  // EX.: 3.7 => 3.7 * 10 => 37 => 37 % 10 => 7.0 => (int)(7.0) => 7
-  int second_band_value = (int)(normalized_resistor * 10) % 10;
+  resistor_band_colors[1] = available_digit_colors[(int)((int)(normalized_resistor * 10) % 10)];
+  resistor_band_color_indexes[1] = (int)((int)(normalized_resistor * 10) % 10);
 
-  // Definição da das Bandas 1, 2 e multiplicador
-  resistor_band_colors[0] = available_digit_colors[first_band_value % 10];
-  resistor_band_colors[1] = available_digit_colors[second_band_value % 10];
-  resistor_band_colors[2] = (exponent >= 0 && exponent <= 9) ? available_digit_colors[exponent] : "erro";
+  if (!is_four_bands_mode) {
+    resistor_band_colors[2] = available_digit_colors[(int)(normalized_resistor * 100) % 10];
+    resistor_band_color_indexes[2] = (int)(normalized_resistor * 100) % 10;
+  }
 
-  resistor_band_color_indexes[0] = first_band_value % 10;
-  resistor_band_color_indexes[1] = second_band_value % 10;
-  resistor_band_color_indexes[2] = (exponent >= 0 && exponent <= 9) ? exponent : 0;
+  resistor_band_colors[3] = (exponent >= 0 && exponent <= 9) ? available_digit_colors[exponent] : "erro";
+  resistor_band_color_indexes[3] = (exponent >= 0 && exponent <= 9) ? exponent : 0;
 }
 
 static err_t tcp_server_accept(void *arg, struct tcp_pcb *newpcb, err_t err) {
@@ -515,7 +590,7 @@ static err_t tcp_server_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, er
         "  <p class=\"temperature\">Multiplicador: <span>%s</span></p>\n"
         "  <p class=\"temperature\">Tolerancia: <span>Au (5%)</span></p>\n",
         unknown_resistor,
-        closest_e24_resistor,
+        closest_comercial_resistor,
         resistor_band_colors[0],
         resistor_band_colors[1],
         resistor_band_colors[2]

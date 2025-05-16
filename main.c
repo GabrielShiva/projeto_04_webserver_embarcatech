@@ -16,8 +16,8 @@
 #include "lwip/netif.h"          // Lightweight IP stack - fornece funções e estruturas para trabalhar com interfaces de rede (netif)
 
 // Credenciais WIFI - Tome cuidado se publicar no github!
-#define WIFI_SSID "JR TELECOM-LAR"
-#define WIFI_PASSWORD "Rama2000"
+const char* WIFI_SSID = "JR TELECOM-LAR";
+const char* WIFI_PASSWORD = "Rama2000";
 
 // Definição dos pinos dos LEDs
 #define LED_PIN CYW43_WL_GPIO_LED_PIN   // GPIO do CI CYW43
@@ -26,7 +26,6 @@
 #define ADC_PIN 28
 #define BTN_B_PIN 6
 #define BTN_A_PIN 5
-float adc_resolution = 4095;
 
 // Definição de macros para o protocolo I2C (SSD1306)
 #define I2C_PORT i2c1
@@ -35,19 +34,13 @@ float adc_resolution = 4095;
 #define SSD1306_ADDRESS 0x3C
 
 // Inicialização de variáveis
-
 int reference_resistor = 470; // Resistência conhecida
-
-float cumulative_adc_measure = 0.0f;
-float average_adc_measures = 0.0f;
 float unknown_resistor = 0.0f;
 float closest_comercial_resistor = 0.0f;
+volatile bool is_four_bands_mode = true;
 
 // Define variáveis para debounce do botão
 volatile uint32_t last_time_btn_press = 0;
-bool is_matrix_enabled = true;
-
-// Debounce delay
 const uint32_t debounce_delay_ms = 260;
 
 // Inicializa instância do display
@@ -76,7 +69,11 @@ const float e96_resistor_values[96] = {
   8.25, 8.45, 8.66, 8.87, 9.09, 9.31, 9.53, 9.76
 };
 
-const char *available_digit_colors[10] = {"preto", "marrom", "vermelho", "laranja", "amarelo", "verde", "azul", "violeta", "cinza", "branco"};
+const char *available_digit_colors[10] = {
+  "preto", "marrom", "vermelho", "laranja", "amarelo",
+  "verde", "azul", "violeta", "cinza", "branco"
+};
+
 const char *resistor_band_colors[4] = {0};
 int resistor_band_color_indexes[4] = {
   0, // primeira banda
@@ -114,7 +111,7 @@ static const char page_footer[] =
 
 
 // Armazena o texto que será exibido no display OLED
-char display_text[20] = {0};
+char display_text[40] = {0};
 
 // Função de callback ao aceitar conexões TCP
 static err_t tcp_server_accept(void *arg, struct tcp_pcb *newpcb, err_t err);
@@ -130,8 +127,6 @@ float get_closest_e24_resistor(float resistor_value);
 
 // Obtenção do resistor da série e96 mais próximo do valor medido
 float get_closest_e96_resistor(float resistor_value);
-
-volatile bool is_four_bands_mode = true;
 
 // Obtenção das cores de cada uma das bandas do resistor (4 bandas) -> 5 bandas ainda será implementado
 void get_band_color(float *resistor_value);
@@ -180,7 +175,8 @@ int main() {
 
   bool color = true;
   ssd1306_fill(&ssd, !color);
-  ssd1306_draw_string(&ssd, "Inic. WiFi...", 5, 30);
+  ssd1306_draw_string(&ssd, "Inicializando", 5, 20);
+  ssd1306_draw_string(&ssd, "Wi-Fi...", 5, 30);
   ssd1306_send_data(&ssd);
 
   sleep_ms(2000);
@@ -189,7 +185,8 @@ int main() {
   while (cyw43_arch_init()) {
       printf("Falha ao inicializar Wi-Fi!\n");
       ssd1306_fill(&ssd, !color);
-      ssd1306_draw_string(&ssd, "Ini Falhou", 5, 30);
+      ssd1306_draw_string(&ssd, "Inicializacao", 5, 20);
+      ssd1306_draw_string(&ssd, "Falhou...", 5, 30);
       ssd1306_send_data(&ssd);
       sleep_ms(100);
       return -1;
@@ -204,13 +201,16 @@ int main() {
   // Conectar à rede WiFI - fazer um loop até que esteja conectado
   printf("Conectando ao Wi-Fi...\n");
   ssd1306_fill(&ssd, !color);
-  ssd1306_draw_string(&ssd, "Conectando WiFi", 5, 30);
+  ssd1306_draw_string(&ssd, "Conectando em", 5, 20);
+  snprintf(display_text, sizeof(display_text), "%s", WIFI_SSID);
+  ssd1306_draw_string(&ssd, display_text, 5, 30);
   ssd1306_send_data(&ssd);
 
   while (cyw43_arch_wifi_connect_timeout_ms(WIFI_SSID, WIFI_PASSWORD, CYW43_AUTH_WPA2_AES_PSK, 20000)) {
       printf("Falha ao conectar ao Wi-Fi\n");
       ssd1306_fill(&ssd, !color);
-      ssd1306_draw_string(&ssd, "Conexao Falhou", 5, 30);
+      ssd1306_draw_string(&ssd, "Conexao", 5, 20);
+      ssd1306_draw_string(&ssd, "Falhou...", 5, 30);
       ssd1306_send_data(&ssd);
       sleep_ms(100);
       return -1;
@@ -220,7 +220,8 @@ int main() {
 
   printf("Conectado ao Wi-Fi!\n");
   ssd1306_fill(&ssd, !color);
-  ssd1306_draw_string(&ssd, "Conectou WiFi", 5, 30);
+  ssd1306_draw_string(&ssd, "Conectou ao", 5, 20);
+  ssd1306_draw_string(&ssd, "Wi-Fi", 5, 30);
   ssd1306_send_data(&ssd);
 
   // Caso seja a interface de rede padrão - imprimir o IP do dispositivo.
@@ -231,7 +232,8 @@ int main() {
   sleep_ms(2000);
 
   ssd1306_fill(&ssd, !color);
-  ssd1306_draw_string(&ssd, "Criando Server", 5, 30);
+  ssd1306_draw_string(&ssd, "Criando", 5, 20);
+  ssd1306_draw_string(&ssd, "servidor...", 5, 30);
   ssd1306_send_data(&ssd);
 
   sleep_ms(2000);
@@ -241,7 +243,8 @@ int main() {
   if (!server) {
       printf("Falha ao criar servidor TCP\n");
       ssd1306_fill(&ssd, !color);
-      ssd1306_draw_string(&ssd, "Falhou Server", 5, 30);
+      ssd1306_draw_string(&ssd, "Falhou em", 5, 20);
+      ssd1306_draw_string(&ssd, "criar servidor", 5, 30);
       ssd1306_send_data(&ssd);
       return -1;
   }
@@ -250,7 +253,8 @@ int main() {
   if (tcp_bind(server, IP_ADDR_ANY, 80) != ERR_OK) {
       printf("Falha ao associar servidor TCP à porta 80\n");
       ssd1306_fill(&ssd, !color);
-      ssd1306_draw_string(&ssd, "Falhou Server", 5, 30);
+      ssd1306_draw_string(&ssd, "Falhou em", 5, 20);
+      ssd1306_draw_string(&ssd, "criar servidor", 5, 30);
       ssd1306_send_data(&ssd);
       return -1;
   }
@@ -262,7 +266,8 @@ int main() {
   tcp_accept(server, tcp_server_accept);
   printf("Servidor ouvindo na porta 80\n");
   ssd1306_fill(&ssd, !color);
-  ssd1306_draw_string(&ssd, "Criou Server", 5, 30);
+  ssd1306_draw_string(&ssd, "Servidor criado", 5, 20);
+  ssd1306_draw_string(&ssd, "com sucesso", 5, 30);
   ssd1306_send_data(&ssd);
 
   sleep_ms(3000);
@@ -273,12 +278,7 @@ int main() {
   while (true) {
     // Cálculo da resistencia em ohms e obtenção do valor comercial mais próximo
     unknown_resistor = resistor_measure();
-
-    if (is_four_bands_mode) {
-      closest_comercial_resistor = get_closest_e24_resistor(unknown_resistor);
-    } else {
-      closest_comercial_resistor = get_closest_e96_resistor(unknown_resistor);
-    }
+    closest_comercial_resistor = is_four_bands_mode ? get_closest_e24_resistor(unknown_resistor) : get_closest_e96_resistor(unknown_resistor);
 
     get_band_color(&closest_comercial_resistor);
 
@@ -443,17 +443,17 @@ float resistor_measure(void) {
     adc_select_input(2);
 
     // Obtenção de várias leituras seguidas e média
-    cumulative_adc_measure = 0.0f;
+    float cumulative_adc_measure = 0.0f;
 
     for (int i = 0; i < 100; i++) {
       cumulative_adc_measure += adc_read();
       sleep_us(10);
     }
 
-    average_adc_measures = cumulative_adc_measure / 100.0f;
+    float average_adc_measures = cumulative_adc_measure / 100.0f;
 
     // Cálculo da resistencia em ohms e obtenção do valor comercial mais próximo
-    return (reference_resistor * average_adc_measures) / (adc_resolution - average_adc_measures);
+    return (reference_resistor * average_adc_measures) / (4095 - average_adc_measures);
 }
 
 float get_closest_e24_resistor(float resistor_value) {

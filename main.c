@@ -82,7 +82,9 @@ int resistor_band_color_indexes[4] = {
   0 // multiplicador
 };
 
-// definição do header do HTML
+// Armazena o texto que será exibido no display OLED
+char display_text[40] = {0};
+
 static const char page_header[] =
   "HTTP/1.1 200 OK\r\n"
   "Content-Type: text/html\r\n"
@@ -90,28 +92,19 @@ static const char page_header[] =
   "<!DOCTYPE html>\n"
   "<html>\n"
   "<head>\n"
-  "  <meta charset=\"utf-8\">\n"
-  "  <title>Medidor de Resistencia</title>\n"
+  "<meta charset='UTF-8'>\n"
+  "<title>Medidor de Resist\u00eancia</title>\n"
   "  <style>\n"
-  "    body { background-color:rgb(216,216,216); font-family:Arial,sans-serif; text-align:center; margin-top:50px; }\n"
-  "    h1 { font-size:35px; }\n"
-  "    .temperature { font-size:20px; margin:10px 0; color:#333; }\n"
+  "    body{background-color:#d8d8d8;font-family:Arial,sans-serif;text-align:center;margin-top:50px;}\n"
+  "    p{font-size:20px;margin:10px 0;}\n"
   "  </style>\n"
   "</head>\n"
   "<body>\n"
-  "  <h1>Medidor de Resistencia</h1>\n";
+  "<h3>Medidor de Resist\u00eancia</h3>\n"
+  ;
 
-// definição do footer e script para atualizar a página do HTML
-static const char page_footer[] =
-  "  <script>\n"
-  "    setInterval(() => { window.location.reload(); }, 1000);\n"
-  "  </script>\n"
-  "</body>\n"
+static const char page_footer[] ="</body>\n"
   "</html>\n";
-
-
-// Armazena o texto que será exibido no display OLED
-char display_text[40] = {0};
 
 // Função de callback ao aceitar conexões TCP
 static err_t tcp_server_accept(void *arg, struct tcp_pcb *newpcb, err_t err);
@@ -548,20 +541,13 @@ static err_t tcp_server_accept(void *arg, struct tcp_pcb *newpcb, err_t err) {
 
 // Tratamento do request do usuário - digite aqui
 void user_request(char **request) {
-    // if (strstr(*request, "GET /data") != NULL) {
-    //     char buf[128];
-    //     int len = snprintf(buf, sizeof(buf),
-    //         "HTTP/1.1 200 OK\r\n"
-    //         "Content-Type: text/plain\r\n"
-    //         "Cache-Control: no-cache\r\n"
-    //         "\r\n"
-    //         "%.0f", unknown_resistor);
-    //     tcp_write(tpcb, buf, len, TCP_WRITE_FLAG_COPY);
-    //     tcp_output(tpcb);
-    // }
+    if (strstr(*request, "GET /four_bands") != NULL) {
+        is_four_bands_mode = true;
+    } else if (strstr(*request, "GET /five_bands") != NULL) {
+        is_four_bands_mode = false;
+    }
 }
 
-// Função de callback para processar requisições HTTP
 static err_t tcp_server_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err) {
     if (!p) {
         tcp_close(tpcb);
@@ -569,40 +555,178 @@ static err_t tcp_server_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, er
         return ERR_OK;
     }
 
-    // copia a requisição
-    char *request = malloc(p->len+1);
+    // Transforma a requisição capturada para uma string
+    char *request = malloc(p->len + 1);
     memcpy(request, p->payload, p->len);
     request[p->len] = '\0';
 
-    // Envia o header da página
+    printf("REQUEST: %s\n", request);
+
+    // Se existir uma requisição para o endpoint /data executa o bloco de código abaixo
+    if (strstr(request, "GET /data") != NULL) {
+        // Ajusta o modo de leitura (4 bandas/ 5 bandas) conforme query string
+        if (strstr(request, "mode=five") != NULL) {
+            printf("CINCO\n");
+            is_four_bands_mode = false;
+        } else {
+            printf("QUATRO\n");
+            is_four_bands_mode = true;
+        }
+
+        // Monta o corpo da resposta
+        char json[1024];
+        int body_len = 0;
+
+        if (is_four_bands_mode) {
+            body_len = snprintf(json, sizeof(json),
+                "<p>Num de faixas: 4</p>"
+                "<p>Medido: %.0f &#8486;</p>"
+                "<p>Comercial: %.0f &#8486;</p>"
+                "<h3>Cores das Faixas</h3>"
+                "<p>1 Faixa: %s</p>"
+                "<p>2 Faixa: %s</p>"
+                "<p>Mult.: %s</p>"
+                "<p>Tole.: Au (5%%)</p>",
+                unknown_resistor,
+                closest_comercial_resistor,
+                resistor_band_colors[0],
+                resistor_band_colors[1],
+                resistor_band_colors[3]
+            );
+        } else {
+            body_len = snprintf(json, sizeof(json),
+                "<p>Num de faixas: 5</p>"
+                "<p>Medido: %.0f &#8486;</p>"
+                "<p>Comercial: %.0f &#8486;</p>"
+                "<h3>Cores das Faixas</h3>"
+                "<p>1 Faixa: %s</p>"
+                "<p>2 Faixa: %s</p>"
+                "<p>3 Faixa: %s</p>"
+                "<p>Mult.: %s</p>"
+                "<p>Tole.: Au (5%%)</p>",
+            unknown_resistor,
+            closest_comercial_resistor,
+            resistor_band_colors[0],
+            resistor_band_colors[1],
+            resistor_band_colors[2],
+            resistor_band_colors[3]
+            );
+        }
+
+        // monta o header com Content-Length
+        char hdr[128];
+        int hdr_len = snprintf(hdr, sizeof(hdr),
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/html; charset=UTF-8\r\n"
+        "Content-Length: %d\r\n"
+        "\r\n",
+        body_len
+        );
+
+        // envia header + corpo
+        tcp_write(tpcb, hdr,     hdr_len,  TCP_WRITE_FLAG_COPY);
+        tcp_write(tpcb, json,    body_len, TCP_WRITE_FLAG_COPY);
+        tcp_output(tpcb);
+
+        // informa ao lwIP que já lemos os bytes do request
+        tcp_recved(tpcb, p->len);
+
+        free(request);
+        pbuf_free(p);
+        return ERR_OK;
+    }
+
+    // Caso não seja AJAX, envia a página normal
     tcp_write(tpcb, page_header, strlen(page_header), TCP_WRITE_FLAG_COPY);
     tcp_output(tpcb);
 
-    // Cria o corpo da página e envia com os valores de resistência atualizados
+    // Monta o corpo com botões e script
     char body[1024];
-    int body_len = snprintf(body, sizeof(body),
-        "  <p class=\"temperature\">Numero de faixas: <span>4</span></p>\n"
-        "  <p class=\"temperature\">Valor Medido: <span id=\"measuredValue\">%.0f</span> &#8486;</p>\n"
-        "  <p class=\"temperature\">Valor Comercial: <span id=\"commercialValue\">%.0f</span> &#8486;</p>\n"
-        "  <h1 style='font-size:25px;'>Cores das Faixas</h1>\n"
-        "  <p class=\"temperature\">1 Faixa: <span>%s</span></p>\n"
-        "  <p class=\"temperature\">2 Faixa: <span>%s</span></p>\n"
-        "  <p class=\"temperature\">Multiplicador: <span>%s</span></p>\n"
-        "  <p class=\"temperature\">Tolerancia: <span>Au (5%)</span></p>\n",
-        unknown_resistor,
-        closest_comercial_resistor,
-        resistor_band_colors[0],
-        resistor_band_colors[1],
-        resistor_band_colors[2]
-    );
-    tcp_write(tpcb, body, body_len, TCP_WRITE_FLAG_COPY);
+    if (is_four_bands_mode) {
+        snprintf(body, sizeof(body),
+            "<button onclick=\"setMode('four')\">4 bandas</button>"
+            "<button onclick=\"setMode('five')\">5 bandas</button>"
+            "<div id='cont'>"
+            "<p>Num de faixas: 4</p>"
+            "<p>Medido: %.0f &#8486;</p>"
+            "<p>Comercial: %.0f &#8486;</p>"
+            "<h3>Cores das Faixas</h3>"
+            "<p>1 Faixa: %s</p>"
+            "<p>2 Faixa: %s</p>"
+            "<p>Mult.: %s</p>"
+            "<p>Tole.: Au (5%%)</p>"
+            "</div>"
+            "<script>"
+            "let mode = 'four';"
+            "function setMode(m) {"
+            "  mode = m;"
+            "  fetchData();"
+            "}"
+            "function fetchData() {"
+            "  fetch('/data?mode=' + mode)"
+            "    .then(function(res) { return res.text(); })"
+            "    .then(function(txt) {"
+            "      document.getElementById('cont').innerHTML = txt;"
+            "    })"
+            "    .catch(function(err) { console.error(err); });"
+            "}"
+            "  setInterval(function(){"
+            "    window.location.reload();"
+            "  }, 2000);"
+            "</script>",
+                unknown_resistor,
+                closest_comercial_resistor,
+                resistor_band_colors[0],
+                resistor_band_colors[1],
+                resistor_band_colors[3]);
+    } else {
+        snprintf(body, sizeof(body),
+            "<button onclick=\"setMode('four')\">4 bandas</button>"
+            "<button onclick=\"setMode('five')\">5 bandas</button>"
+            "<div id='cont'>"
+            "<p>Num de faixas: 5</p>"
+            "<p>Medido: %.0f &#8486;</p>"
+            "<p>Comercial: %.0f &#8486;</p>"
+            "<h3>Cores das Faixas</h3>"
+            "<p>1 Faixa: %s</p>"
+            "<p>2 Faixa: %s</p>"
+            "<p>3 Faixa: %s</p>"
+            "<p>Mult.: %s</p>"
+            "<p>Tole.: Au (5%%)</p>"
+            "</div>"
+            "<script>"
+            "let mode = 'five';"
+            "function setMode(m) {"
+            "  mode = m;"
+            "  fetchData();"
+            "}"
+            "function fetchData() {"
+            "  fetch('/data?mode=' + mode)"
+            "    .then(function(res) { return res.text(); })"
+            "    .then(function(txt) {"
+            "      document.getElementById('cont').innerHTML = txt;"
+            "    })"
+            "    .catch(function(err) { console.error(err); });"
+            "}"
+            "  setInterval(function(){"
+            "    fetchData();"
+            "  }, 2000);"
+            "</script>",
+                unknown_resistor,
+                closest_comercial_resistor,
+                resistor_band_colors[0],
+                resistor_band_colors[1],
+                resistor_band_colors[2],
+                resistor_band_colors[3]);
+    }
+
+    tcp_write(tpcb, body, strlen(body), TCP_WRITE_FLAG_COPY);
     tcp_output(tpcb);
 
-    // Envia o footer da págian HTML
+    // Envia footer da página
     tcp_write(tpcb, page_footer, strlen(page_footer), TCP_WRITE_FLAG_COPY);
     tcp_output(tpcb);
 
-    // Faz a limpeza do request
     free(request);
     pbuf_free(p);
     return ERR_OK;
